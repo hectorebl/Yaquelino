@@ -1,0 +1,113 @@
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.signal import butter, filtfilt, welch
+from scipy.stats import ttest_ind
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report
+
+# Configuration
+fs = 1000  # Sampling frequency
+lowcut = 20
+highcut = 450
+window_size = 200  # For RMS and moving average
+folder_path = r'C:\Users\jimen\OneDrive\Escritorio\Fall 2024\Proyectos e innovación\EMG'
+
+# Load data files
+def load_emg_files(group):
+    file_list = [f for f in os.listdir(folder_path) if group in f]
+    data = []
+    for file in file_list:
+        file_path = os.path.join(folder_path, file)
+        signal = np.loadtxt(file_path, comments='#', delimiter='\t', usecols=(5,))
+        data.append(signal)
+    return data
+
+# Bandpass filter
+def bandpass_filter(signal, lowcut, highcut, fs, order=4):
+    nyquist = 0.5 * fs
+    low = lowcut / nyquist
+    high = highcut / nyquist
+    b, a = butter(order, [low, high], btype='band')
+    return filtfilt(b, a, signal)
+
+# Calculate RMS
+def calculate_rms(signal, window_size):
+    squared = np.square(signal)
+    window = np.ones(window_size) / window_size
+    return np.sqrt(np.convolve(squared, window, mode='valid'))
+
+# Extract features
+def extract_features(signals):
+    features = []
+    for signal in signals:
+        filtered = bandpass_filter(signal, lowcut, highcut, fs)
+        rectified = np.abs(filtered)
+        rms = calculate_rms(rectified, window_size)
+        iemg = np.sum(rectified)
+        median_freq = np.median(welch(rectified, fs=fs, nperseg=min(len(rectified), 1024))[0])
+        variability = np.var(rectified)
+        features.append([np.mean(rms), iemg, median_freq, variability])
+    return np.array(features)
+
+# Load data
+normal_signals = load_emg_files("Normal")
+amputee_signals = load_emg_files("Amputee")
+
+# Extract features
+normal_features = extract_features(normal_signals)
+amputee_features = extract_features(amputee_signals)
+
+# Combine and normalize features
+features = np.vstack((normal_features, amputee_features))
+labels = np.array([0] * len(normal_features) + [1] * len(amputee_features))
+scaler = StandardScaler()
+features_scaled = scaler.fit_transform(features)
+
+# Statistical analysis
+for i, feature_name in enumerate(['Mean RMS', 'iEMG', 'Median Frequency', 'Variability']):
+    stat, p = ttest_ind(normal_features[:, i], amputee_features[:, i])
+    print(f"{feature_name}: t-statistic = {stat:.2f}, p-value = {p:.2e}")
+
+# Visualization - Normal Signals
+plt.figure(figsize=(10, 6))
+for signal in normal_signals:
+    plt.plot(calculate_rms(signal, window_size), label="Normal", alpha=0.7)
+plt.title("RMS of Normal Signals")
+plt.xlabel("Sample Window")
+plt.ylabel("RMS Amplitude")
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# Visualization - Amputee Signals
+plt.figure(figsize=(10, 6))
+for signal in amputee_signals:
+    plt.plot(calculate_rms(signal, window_size), label="Amputee", alpha=0.7)
+plt.title("RMS of Amputee Signals")
+plt.xlabel("Sample Window")
+plt.ylabel("RMS Amplitude")
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# Final Comparison - Combined RMS Signals
+plt.figure(figsize=(10, 6))
+for signal in normal_signals:
+    plt.plot(calculate_rms(signal, window_size), label="Normal", alpha=0.5)
+for signal in amputee_signals:
+    plt.plot(calculate_rms(signal, window_size), label="Amputee", alpha=0.5)
+plt.title("RMS of Normal vs Amputee Signals")
+plt.xlabel("Sample Window")
+plt.ylabel("RMS Amplitude")
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# Classification
+clf = RandomForestClassifier(random_state=42)
+clf.fit(features_scaled, labels)
+predicted = clf.predict(features_scaled)
+print(classification_report(labels, predicted, target_names=["Normal", "Amputee"]))
